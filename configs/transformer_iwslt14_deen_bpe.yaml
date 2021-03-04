@@ -3,14 +3,14 @@ name: "iwslt14-deen-bpe-transformer"
 data:
     src: "de"
     trg: "en"
-    train: "test/data/iwslt14/train.bpe.32000"
-    dev: "test/data/iwslt14/valid.bpe.32000"
-    test: "test/data/iwslt14/test.bpe.32000"
+    train: "../test/data/iwslt14/train.bpe.32000"
+    dev: "../test/data/iwslt14/valid.bpe.32000"
+    test: "../test/data/iwslt14/test.bpe.32000"
     level: "bpe"
     lowercase: True
     max_sent_length: 62
-    src_vocab: "test/data/iwslt14/vocab.txt"
-    trg_vocab: "test/data/iwslt14/vocab.txt"
+    src_vocab: "../test/data/iwslt14/vocab.txt"
+    trg_vocab: "../test/data/iwslt14/vocab.txt"
 
 testing:
     beam_size: 5
@@ -29,15 +29,15 @@ training:
     learning_rate_min: 0.00000001
     weight_decay: 0.0
     label_smoothing: 0.1
-    batch_size: 4096
+    batch_size: 2048 #4096
     batch_type: "token"
-    early_stopping_metric: "eval_metric"
+    early_stopping_metric: "loss" #"eval_metric"
     epochs: 100
     validation_freq: 1000
     logging_freq: 100
     eval_metric: "bleu"
     model_dir: "models/iwslt14_deen_bpe_transformer"
-    overwrite: False
+    overwrite: True
     shuffle: True
     use_cuda: True
     max_output_length: 100
