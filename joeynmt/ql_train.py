@@ -138,14 +138,14 @@ def Q_learning(cfg_file: str) -> None:
     early_stopping_metric = train_config.get("early_stopping_metric",
                                              "eval_metric")
     if early_stopping_metric in ["ppl", "loss"]:
-        minimize_metric = True
+        stats.minimize_metric = True
     elif early_stopping_metric == "eval_metric":
         if eval_metric in ["bleu", "chrf",
                                 "token_accuracy", "sequence_accuracy"]:
-            minimize_metric = False
+            stats.minimize_metric = False
         # eval metric that has to get minimized (not yet implemented)
         else:
-            minimize_metric = True
+            stats.minimize_metric = True
 
     # data loader(modified from train_and_validate function
     # Returns a torchtext iterator for a torchtext dataset.
