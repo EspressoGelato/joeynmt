@@ -59,8 +59,7 @@ def transformer_greedy(
 
             logits = logits[:, -1] # logits shape: batch_size * total number of words in corpus
 
-            # Add noise: espilon random to get the next word
-            sample = random.random()
+            # Add noise: espilon random to get the next word.
 
             if sample > eps_threshold:
 
@@ -70,9 +69,8 @@ def transformer_greedy(
             else:
                 random_index = np.random.randint(low=0, high=logits.shape[1], size = logits.shape[0])
                 # get random index
-                next_word = logits[range(logits.shape[0]), random_index]
+                next_word = torch.Tensor(random_index)
 
-            next_word = next_word.data.long()
             # get the word's index in corpus, return a tensor. shape: (batch_size,)
             ys = torch.cat([ys, next_word.unsqueeze(-1)], dim=1)
             # concatenate the next_word into a new tensor, shape: (batch_size, length of the prefix)
