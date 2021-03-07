@@ -60,7 +60,7 @@ def transformer_greedy(
             logits = logits[:, -1] # logits shape: batch_size * total number of words in corpus
 
             # Add noise: espilon random to get the next word.
-
+            sample = random.random()
             if sample > eps_threshold:
 
                 _, next_word = torch.max(logits, dim=1) # greedy decoding: choose arg max over vocabulary in each step
@@ -70,7 +70,8 @@ def transformer_greedy(
                 random_index = np.random.randint(low=0, high=logits.shape[1], size = logits.shape[0])
                 # get random index
                 next_word = torch.Tensor(random_index)
-
+              
+            next_word = next_word.long()
             # get the word's index in corpus, return a tensor. shape: (batch_size,)
             ys = torch.cat([ys, next_word.unsqueeze(-1)], dim=1)
             # concatenate the next_word into a new tensor, shape: (batch_size, length of the prefix)
