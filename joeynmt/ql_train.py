@@ -28,9 +28,9 @@ from joeynmt.helpers import log_data_info, load_config, log_cfg, \
 
 from joeynmt.loss import XentLoss
 
-
 Transition = namedtuple('Transition',
-                        ('source_sentence', 'prefix','next_word', 'reward'))
+                        ('source_sentence', 'prefix', 'next_word', 'reward'))
+
 
 class ReplayMemory(object):
 
@@ -44,13 +44,14 @@ class ReplayMemory(object):
         if len(self.memory) < self.capacity:
             self.memory.append(None)
         self.memory[self.position] = Transition(*args)
-        self.position = (self.position + 1 ) % self.capacity
+        self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
         return random.sample(self.memory, batch_size)
 
     def __len__(self):
         return len(self.memory)
+
 
 class TrainStatistics:
     def __init__(self, steps: int = 0, stop: bool = False,
@@ -79,34 +80,38 @@ class TrainStatistics:
         return is_best
 
 
-
 def Q_learning(cfg_file: str) -> None:
     """
     Main training function. After training, also test on test data if given.
     :param cfg_file: path to configuration yaml file
     """
-    cfg = load_config(cfg_file) # config is a dict
+    cfg = load_config(cfg_file)  # config is a dict
     # make logger
     model_dir = make_model_dir(cfg["training"]["model_dir"],
-                   overwrite=cfg["training"].get("overwrite", False))
-    _ = make_logger(model_dir, mode="train")    # version string returned
+                               overwrite=cfg["training"].get("overwrite", False))
+    _ = make_logger(model_dir, mode="train")  # version string returned
     # TODO: save version number in model checkpoints
 
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
 
     # load the data
+    print("loadding data here")
     train_data, dev_data, test_data, src_vocab, trg_vocab = load_data(
         data_cfg=cfg["data"])
     # The training data is filtered to include sentences up to `max_sent_length`
     #     on source and target side.
 
+    # training config:
     train_config = cfg["training"]
-
-    # data & batch handling # (modified from TrainManager)
     shuffle = train_config.get("shuffle", True)
     batch_size = train_config["batch_size"]
+    mini_BATCH_SIZE = train_config["mini_batch_size"]
     batch_type = train_config.get("batch_type", "sentence")
+    outer_epochs = train_config.get("outer_epochs", 10)
+    inner_epochs = train_config.get("inner_epochs", 10)
+    TARGET_UPDATE = train_config.get("target_update", 10)
+    Gamma = train_config.get("Gamma", 0.999)
     use_cuda = train_config["use_cuda"] and torch.cuda.is_available()
 
     # validation part config
@@ -141,7 +146,7 @@ def Q_learning(cfg_file: str) -> None:
         stats.minimize_metric = True
     elif early_stopping_metric == "eval_metric":
         if eval_metric in ["bleu", "chrf",
-                                "token_accuracy", "sequence_accuracy"]:
+                           "token_accuracy", "sequence_accuracy"]:
             stats.minimize_metric = False
         # eval metric that has to get minimized (not yet implemented)
         else:
@@ -151,17 +156,21 @@ def Q_learning(cfg_file: str) -> None:
     # Returns a torchtext iterator for a torchtext dataset.
     # param dataset: torchtext dataset containing src and optionally trg
     train_iter = make_data_iter(train_data,
-                                batch_size= batch_size,
-                                batch_type= batch_type,
-                                train=True, shuffle = shuffle)
+                                batch_size=batch_size,
+                                batch_type=batch_type,
+                                train=True, shuffle=shuffle)
 
     # initialize the Replay Memory D with capacity N
     memory = ReplayMemory(10000)
+    steps_done = 0
+
 
     # initialize two DQN networks
-    policy_net = build_model(cfg["model"], src_vocab=src_vocab, trg_vocab=trg_vocab) # Q_network
-    target_net = build_model(cfg["model"], src_vocab=src_vocab, trg_vocab=trg_vocab) # Q_hat_network
-
+    policy_net = build_model(cfg["model"], src_vocab=src_vocab, trg_vocab=trg_vocab)  # Q_network
+    target_net = build_model(cfg["model"], src_vocab=src_vocab, trg_vocab=trg_vocab)  # Q_hat_network
+    #logger.info(policy_net.src_vocab.stoi)
+    #print("###############trg vocab: ", len(target_net.trg_vocab.stoi))
+    #print("trg embed: ", target_net.trg_embed.vocab_size)
     if use_cuda:
         policy_net.cuda()
         target_net.cuda()
@@ -169,7 +178,7 @@ def Q_learning(cfg_file: str) -> None:
     target_net.load_state_dict(policy_net.state_dict())
     # Initialize target net Q_hat with weights equal to policy_net
 
-    target_net.eval() # target_net not update the parameters, test mode
+    target_net.eval()  # target_net not update the parameters, test mode
 
     # Optimizer
     optimizer = build_optimizer(config=cfg["training"],
@@ -183,46 +192,44 @@ def Q_learning(cfg_file: str) -> None:
     cross_entropy_loss = XentLoss(pad_index=pad_index)
     policy_net.loss_function = cross_entropy_loss
 
-
-
-    num_episodes = 100
-    TARGET_UPDATE = 10
-
-    for i_episode in range(num_episodes):
+    for i_episode in range(outer_epochs):
         # Outer loop
 
         # get batch
-        for i, batch in enumerate(iter(train_iter)): # joeynmt training.py 377
+        for i, batch in enumerate(iter(train_iter)):  # joeynmt training.py 377
 
             # create a Batch object from torchtext batch
             # ( use class Batch from batch.py)
             # return the sentences same length (with padding) in one batch
             batch = Batch(batch, policy_net.pad_index,
-                                     use_cuda= use_cuda)
+                          use_cuda=use_cuda)
             # we want to get batch.src and batch.trg
             # the shape of batch.src: (batch_size * length of the sentence)
 
             # source here is represented by the word index not word embedding.
             # Use Model._encode: self.src_embed(src) to turn word index into word embedding.
-
+            # print(batch.src)
+            # print(batch.src_length)
+            # print(torch.max(batch.src))
             encoder_output_batch, _, _, _ = policy_net(
                 return_type="encode",
-                src = batch.src,
-                src_length = batch.src_length,
-                src_mask = batch.src_mask,
+                src=batch.src,
+                src_length=batch.src_length,
+                src_mask=batch.src_mask,
             )
-            #print('@@@@@@@@@@@', batch.src_length)
-            #print(len(batch.src_length))
-            #print(batch.src)
-            print('batch.src.shape is: ', batch.src.shape)
-
+            #print('batch.src.shape is: ', batch.src.shape)
+            #logger.info(encoder_output_batch.shape)
+            # print('max_output_length', max_output_length)
 
             # get the translated output of a batch
             trans_output_batch, _ = transformer_greedy(
-                src_mask = batch.src_mask, max_output_length = 100, model = policy_net,
-                encoder_output = encoder_output_batch, eps_threshold = 0.1)
+                src_mask=batch.src_mask, max_output_length=max_output_length, model=policy_net,
+                encoder_output=encoder_output_batch, steps_done = steps_done, use_cuda =use_cuda)
+            #print('steps_done',steps_done)
 
-            print('trans_output_batch.shape is:', trans_output_batch.shape)
+            steps_done += 1
+
+            #print('trans_output_batch.shape is:', trans_output_batch.shape)
             # batch_size * max_translation_sentence_length
 
             # decode back to symbols
@@ -233,25 +240,23 @@ def Q_learning(cfg_file: str) -> None:
             # :param skip_pad: skip generated <pad> tokens
             # :return: list of list of strings (tokens)
 
-            #print('***************************************batch.trg', batch.trg)
-            print('batch.trg.shape is:', batch.trg.shape)
-            #print(trans_output_batch.shape)
-            #print('&&&&&&&&&&&&&7', trans_output_batch[0])
-            #print(trans_output_batch[1])
+            #print('batch.trg', batch.trg)
+            # print('batch.trg.shape is:', batch.trg.shape)
+            #print('trans_output_batch', trans_output_batch)
 
-            reward_batch = []# Get the reward_batch (Get the bleu score of the sentences in a batch)
+            reward_batch = []  # Get the reward_batch (Get the bleu score of the sentences in a batch)
 
             for i in range(int(batch.src.shape[0])):
                 all_outputs = [trans_output_batch[i]]
-                hypotheses = policy_net.trg_vocab.arrays_to_sentences(arrays = all_outputs,
-                                                                  cut_at_eos=True)
+                hypotheses = policy_net.trg_vocab.arrays_to_sentences(arrays=all_outputs,
+                                                                      cut_at_eos=True)
 
                 all_ref = [batch.trg[i]]
-                references = policy_net.trg_vocab.arrays_to_sentences(arrays= all_ref,
-                                                                  cut_at_eos=True)
+                references = policy_net.trg_vocab.arrays_to_sentences(arrays=all_ref,
+                                                                      cut_at_eos=True)
 
-                #print('!!!!hypo', hypotheses)
-                #print('!!!ref', references)
+                #print('hypothese', hypotheses)
+                #print('reference', references)
                 # evaluate with metric on full dataset
                 join_char = " " if level in ["word", "bpe"] else ""
                 # valid_sources = [join_char.join(s) for s in data.src]
@@ -262,25 +267,19 @@ def Q_learning(cfg_file: str) -> None:
                     tokenize=sacrebleu["tokenize"])
 
                 reward_batch.append(current_valid_score)
-            print('reward batch is', reward_batch)
+            #print('reward batch is', reward_batch)
+            reward_batch = torch.tensor(reward_batch, dtype=torch.float)
 
-            #reward_batch = bleu(hypotheses, references, tokenize="13a")
-            #print(reward_batch)
-            # shape?
+            # reward_batch = bleu(hypotheses, references, tokenize="13a")
+            # print('reward_batch.shape', reward_batch.shape)
 
             # make prefix and push tuples into memory
-            push_sample_to_memory(eos_index = policy_net.eos_index, memory = memory, src_batch = batch.src,
-                                  trans_output_batch = trans_output_batch,
-                                  reward_batch= reward_batch, max_output_length=100)
-            #if use_cuda:
-             #   torch.cuda.empty_cache()
+            push_sample_to_memory(eos_index=policy_net.eos_index, memory=memory, src_batch=batch.src,
+                                  trans_output_batch=trans_output_batch,
+                                  reward_batch=reward_batch, max_output_length=max_output_length)
 
-
-            T =10
             # inner loop
-            mini_BATCH_SIZE = 32
-
-            for t in range(T):
+            for t in range(inner_epochs):
                 # Sample mini-batch from the memory
                 transitions = memory.sample(mini_BATCH_SIZE)
                 # transition = [Transition(source=array([]), prefix=array([]), next_word= int, reward= int),
@@ -291,9 +290,9 @@ def Q_learning(cfg_file: str) -> None:
                 # mini_batch = Transition(source=(array([]), array([]),...), prefix=(array([],...),
                 #               next_word=array([...]), reward=array([...]))
                 # mini_batch.reward is tuple: length is mini_BATCH_SIZE.
+                #print('mini_batch', mini_batch)
 
-
-                # concatenate together into a tensor.
+                #concatenate together into a tensor.
                 words = []
                 for word in mini_batch.next_word:
                     new_word = word.unsqueeze(0)
@@ -301,34 +300,35 @@ def Q_learning(cfg_file: str) -> None:
                 mini_next_word = torch.cat(words)  # shape (mini_BATCH_SIZE,)
                 mini_reward = torch.tensor(mini_batch.reward)  # shape (mini_BATCH_SIZE,)
 
-                #print(mini_next_word.shape)
-                #print(mini_reward.shape)
-
-
-
                 mini_src_length = [len(item) for item in mini_batch.source_sentence]
                 mini_src_length = torch.Tensor(mini_src_length)
 
-                mini_src = pad_sequence(mini_batch.source_sentence, batch_first=True, padding_value = float(pad_index))
+                mini_src = pad_sequence(mini_batch.source_sentence, batch_first=True, padding_value=float(pad_index))
                 # shape (mini_BATCH_SIZE, max_length_src)
 
                 length_prefix = [len(item) for item in mini_batch.prefix]
                 mini_prefix_length = torch.Tensor(length_prefix)
 
-                #print('###########mininbatch_prefix',mini_batch.prefix)
-
                 prefix_list = []
                 for prefix_ in mini_batch.prefix:
-                    prefix_ =  torch.from_numpy(prefix_)
+                    prefix_ = torch.from_numpy(prefix_)
                     prefix_list.append(prefix_)
 
-                mini_prefix = pad_sequence(prefix_list, batch_first=True, padding_value = pad_index)
+                mini_prefix = pad_sequence(prefix_list, batch_first=True, padding_value=pad_index)
                 # shape (mini_BATCH_SIZE, max_length_prefix)
 
                 mini_src_mask = (mini_src != pad_index).unsqueeze(1)
                 mini_trg_mask = (mini_prefix != pad_index).unsqueeze(1)
 
-                # max_length_src = torch.max(mini_src_length)#max([len(item) for item in mini_batch.source_sentence])
+                #print('mini_src',  mini_src)
+                #print('mini_src_length', mini_src_length)
+                #print('mini_src_mask', mini_src_mask)
+                #print('mini_prefix', mini_prefix)
+                #print('mini_trg_mask', mini_trg_mask)
+
+                #print('mini_reward', mini_reward)
+
+                # max_length_src = torch.max(mini_src_length) #max([len(item) for item in mini_batch.source_sentence])
 
                 if use_cuda:
                     mini_src = mini_src.cuda()
@@ -338,175 +338,169 @@ def Q_learning(cfg_file: str) -> None:
                     mini_trg_mask = mini_trg_mask.cuda()
                     mini_next_word = mini_next_word.cuda()
 
-
-                #print(next(policy_net.parameters()).is_cuda)
-                #print(mini_trg_mask.get_device())
+                # print(next(policy_net.parameters()).is_cuda)
+                # print(mini_trg_mask.get_device())
                 # calculate the Q_value
                 logits_Q, _, _, _ = policy_net._encode_decode(
                     src = mini_src,
-                    trg_input= mini_prefix,
-                    src_mask= mini_src_mask,
+                    trg_input=mini_prefix,
+                    src_mask = mini_src_mask,
                     src_length = mini_src_length,
                     trg_mask = mini_trg_mask  # trg_mask = (self.trg_input != pad_index).unsqueeze(1)
                 )
+                #print('mini_prefix_length', mini_prefix_length)
 
-                #print('%%%%%%%%%%%%%%%%%%%%%%%' * 10, logits_Q.shape) # torch.Size([64, 99, 31716])
-                #print(mini_BATCH_SIZE) #64
-                #print(logits_Q)
-                #print('??????', mini_prefix_length.shape)
-                #print(mini_prefix_length)
+                #print('logits_Q.shape', logits_Q.shape) # torch.Size([64, 99, 31716])
+                #print('logits_Q', logits_Q)
 
                 # length_prefix = max([len(item) for item in mini_batch.prefix])
                 # logits_Q shape: batch_size * length of the sentence * total number of words in corpus.
-                logits_Q = logits_Q[range(mini_BATCH_SIZE), mini_prefix_length.long()-1,:]
-
+                logits_Q = logits_Q[range(mini_BATCH_SIZE), mini_prefix_length.long()-1, :]
+                #print('logits_Q_.shape', logits_Q.shape) #shape(mini_batch_size, num_words)
                 # logits shape: mini_batch_size * total number of words in corpus
                 Q_value = logits_Q[range(mini_BATCH_SIZE), mini_next_word]
+                #print('mini_next_word', mini_next_word)
+                #print("Q_value", Q_value)
 
-                mini_prefix_add = torch.cat([mini_prefix, mini_next_word.unsqueeze(1)],dim=1)
+                mini_prefix_add = torch.cat([mini_prefix, mini_next_word.unsqueeze(1)], dim=1)
+                #print('mini_prefix_add', mini_prefix_add)
                 mini_trg_mask_add = (mini_prefix_add != pad_index).unsqueeze(1)
+                #print('mini_trg_mask_add', mini_trg_mask_add)
 
                 if use_cuda:
                     mini_prefix_add = mini_prefix_add.cuda()
                     mini_trg_mask_add = mini_trg_mask_add.cuda()
 
-                logits_Q_hat,_,_,_ = target_net._encode_decode(
-                    src = mini_src,
-                    trg_input= mini_prefix_add,
-                    src_mask= mini_src_mask,
-                    src_length = mini_src_length,
-                    trg_mask = mini_trg_mask_add
+                logits_Q_hat, _, _, _ = target_net._encode_decode(
+                    src= mini_src,
+                    trg_input=mini_prefix_add,
+                    src_mask=mini_src_mask,
+                    src_length=mini_src_length,
+                    trg_mask=mini_trg_mask_add
                 )
-                logits_Q_hat = logits_Q_hat[range(mini_BATCH_SIZE), mini_prefix_length.long(),:]
-                Q_hat_value, indices = torch.max(logits_Q_hat, dim = 1)
+                #print('mini_prefix_add.shape', mini_prefix_add.shape)
+                #print('logits_Q_hat.shape', logits_Q_hat.shape)
+                #print('mini_prefix_length.long()', mini_prefix_length.long())
+                logits_Q_hat = logits_Q_hat[range(mini_BATCH_SIZE), mini_prefix_length.long(), :]
+                Q_hat_value, _ = torch.max(logits_Q_hat, dim=1)
+                #print('Q_hat_value', Q_hat_value)
 
-                #print('%%%%%%%%%%%%%%%', Q_hat_value.shape)
-                #print(Q_hat_value)
-
-
-                Gamma = 0.1
                 yj = mini_reward.float()
-                #print('@@@@@@@@@@@@@@@@@@@@@@@@ mini reward', mini_reward)
+                #print('yj', yj)
                 index = (mini_reward == 0)
-
                 #print('index', index)
-                #print(yj.shape, index.shape, Q_hat_value.shape)
+
                 if use_cuda:
                     yj = yj.cuda()
                     Q_hat_value = Q_hat_value.cuda()
 
                 yj[index] = Gamma * Q_hat_value[index]
-            
-
+                #print("yj = ", yj)
+                #print("Q_value=", Q_value)
 
                 yj.detach()
+                # Optimize the model
                 policy_net.zero_grad()
 
                 # Compute loss
                 loss = loss_function(yj, Q_value)
-                print('loss', loss)
-
-                # Optimize the model
-                optimizer.zero_grad()
+                #print('loss', loss)
+                #logger.info(loss)
                 loss.backward()
-
-                for param in policy_net.parameters():
-                    param.grad.data.clamp_(-1, 1)
+                #for param in policy_net.parameters():
+                #   param.grad.data.clamp_(-1, 1)
                 optimizer.step()
-                # increment step counter
+
                 stats.steps += 1
-                print('step', stats.steps)
+                #print('step', stats.steps)
 
-                if t % TARGET_UPDATE == 0:
-                    print('update the parameters in target_net.')
+                if stats.steps % TARGET_UPDATE == 0:
+                    #print('update the parameters in target_net.')
                     target_net.load_state_dict(policy_net.state_dict())
-                    
+
+                #if stats.steps % validation_freq == 0:  # Validation
+        print('Start validation')
+
+        valid_score, valid_loss, valid_ppl, valid_sources, \
+        valid_sources_raw, valid_references, valid_hypotheses, \
+        valid_hypotheses_raw, valid_attention_scores = \
+            validate_on_data(
+                model=policy_net,
+                data=dev_data,
+                batch_size=eval_batch_size,
+                use_cuda=use_cuda,
+                level=level,
+                eval_metric=eval_metric,
+                n_gpu=n_gpu,
+                compute_loss=True,
+                beam_size=1,
+                beam_alpha=-1,
+                batch_type=eval_batch_type,
+                postprocess=True,
+                bpe_type=bpe_type,
+                sacrebleu=sacrebleu,
+                max_output_length=max_output_length
+            )
+        print('validation_loss: {}, validation_score: {}'.format(valid_loss, valid_score))
+        logger.info(valid_loss)
+        print('average loss: total_loss/n_tokens:', valid_ppl)
+
+        if early_stopping_metric == "loss":
+            ckpt_score = valid_loss
+        elif early_stopping_metric in ["ppl", "perplexity"]:
+            ckpt_score = valid_ppl
+        else:
+            ckpt_score = valid_score
+        if stats.is_best(ckpt_score):
+            stats.best_ckpt_score = ckpt_score
+            stats.best_ckpt_iter = stats.steps
+            logger.info('Hooray! New best validation result [%s]!',
+                        early_stopping_metric)
+            if ckpt_queue.maxsize > 0:
+                logger.info("Saving new checkpoint.")
+
+                # def _save_checkpoint(self) -> None:
+                """
+                Save the model's current parameters and the training state to a
+                checkpoint.
+                The training state contains the total number of training steps,
+                the total number of training tokens,
+                the best checkpoint score and iteration so far,
+                and optimizer and scheduler states.
+                """
+                model_path = "{}/{}.ckpt".format(model_dir, stats.steps)
+                model_state_dict = policy_net.module.state_dict() \
+                    if isinstance(policy_net, torch.nn.DataParallel) \
+                    else policy_net.state_dict()
+                state = {
+                    "steps": stats.steps,
+                    "total_tokens": stats.total_tokens,
+                    "best_ckpt_score": stats.best_ckpt_score,
+                    "best_ckpt_iteration": stats.best_ckpt_iter,
+                    "model_state": model_state_dict,
+                    "optimizer_state": optimizer.state_dict(),
+                    # "scheduler_state": scheduler.state_dict() if
+                    # self.scheduler is not None else None,
+                    # 'amp_state': amp.state_dict() if self.fp16 else None
+                }
+                torch.save(state, model_path)
+                if ckpt_queue.full():
+                    to_delete = ckpt_queue.get()  # delete oldest ckpt
+                    try:
+                        os.remove(to_delete)
+                    except FileNotFoundError:
+                        logger.warning("Wanted to delete old checkpoint %s but "
+                                       "file does not exist.", to_delete)
+
+                ckpt_queue.put(model_path)
+
+                best_path = "{}/best.ckpt".format(model_dir)
+                try:
+                    # create/modify symbolic link for best checkpoint
+                    symlink_update("{}.ckpt".format(stats.steps), best_path)
+                except OSError:
+                    # overwrite best.ckpt
+                    torch.save(state, best_path)
 
 
-                if stats.steps % validation_freq == 0: #Validation
-                    print('Start validation')
-
-                    valid_score, valid_loss, valid_ppl, valid_sources, \
-                    valid_sources_raw, valid_references, valid_hypotheses, \
-                    valid_hypotheses_raw, valid_attention_scores = \
-                        validate_on_data(
-                            model = policy_net,
-                            data = dev_data,
-                            batch_size = eval_batch_size,
-                            use_cuda = use_cuda,
-                            level = level,
-                            eval_metric = eval_metric,
-                            n_gpu = n_gpu,
-                            compute_loss = True,
-                            beam_size = 1,
-                            beam_alpha = -1,
-                            batch_type = eval_batch_type,
-                            postprocess = True,
-                            bpe_type = bpe_type,
-                            sacrebleu = sacrebleu,
-                            max_output_length = max_output_length
-                        )
-                    print('validation_loss: {}, validation_score: {}'.format(valid_loss, valid_score))
-                    new_best = False
-                    if early_stopping_metric == "loss":
-                        ckpt_score = valid_loss
-                    elif early_stopping_metric in ["ppl", "perplexity"]:
-                        ckpt_score = valid_ppl
-                    else:
-                        ckpt_score = valid_score
-                    if stats.is_best(ckpt_score):
-                        stats.best_ckpt_score = ckpt_score
-                        stats.best_ckpt_iter = stats.steps
-                        logger.info('Hooray! New best validation result [%s]!',
-                                    early_stopping_metric)
-                        if ckpt_queue.maxsize > 0:
-                            logger.info("Saving new checkpoint.")
-                            new_best = True
-
-                            # def _save_checkpoint(self) -> None:
-                            """
-                            Save the model's current parameters and the training state to a
-                            checkpoint.
-                            The training state contains the total number of training steps,
-                            the total number of training tokens,
-                            the best checkpoint score and iteration so far,
-                            and optimizer and scheduler states.
-                            """
-                            model_path = "{}/{}.ckpt".format(model_dir, stats.steps)
-                            model_state_dict = policy_net.module.state_dict() \
-                                if isinstance(policy_net, torch.nn.DataParallel) \
-                                else policy_net.state_dict()
-                            state = {
-                                "steps": stats.steps,
-                                "total_tokens": stats.total_tokens,
-                                "best_ckpt_score": stats.best_ckpt_score,
-                                "best_ckpt_iteration": stats.best_ckpt_iter,
-                                "model_state": model_state_dict,
-                                "optimizer_state": optimizer.state_dict(),
-                                #"scheduler_state": scheduler.state_dict() if
-                                #self.scheduler is not None else None,
-                                #'amp_state': amp.state_dict() if self.fp16 else None
-                            }
-                            torch.save(state, model_path)
-                            if ckpt_queue.full():
-                                to_delete = ckpt_queue.get()  # delete oldest ckpt
-                                try:
-                                    os.remove(to_delete)
-                                except FileNotFoundError:
-                                    logger.warning("Wanted to delete old checkpoint %s but "
-                                                   "file does not exist.", to_delete)
-
-                            ckpt_queue.put(model_path)
-
-                            best_path = "{}/best.ckpt".format(model_dir)
-                            try:
-                                # create/modify symbolic link for best checkpoint
-                                symlink_update("{}.ckpt".format(stats.steps), best_path)
-                            except OSError:
-                                # overwrite best.ckpt
-                                torch.save(state, best_path)
-
-
-
-Q_learning(cfg_file = '../configs/transformer_iwslt14_deen_bpe.yaml')
-
+Q_learning(cfg_file='../configs/transformer_iwslt14_deen_bpe.yaml')
