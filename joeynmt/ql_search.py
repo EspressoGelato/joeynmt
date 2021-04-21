@@ -81,6 +81,7 @@ def transformer_greedy(
             eps_threshold = EPS_END + (EPS_START - EPS_END) * \
                             math.exp(-1. * steps_done / EPS_DECAY)
             #print('eps_threshold', eps_threshold)
+            eps_threshold = -1
 
             if sample > eps_threshold:
 
@@ -154,6 +155,7 @@ def push_sample_to_memory(eos_index, memory, src_batch, trans_output_batch, rewa
                 else:
                     #print('this sentence is finished, s,p,w,and reward', source, prefix, next_word, reward_batch[i])
                     memory.push(source, prefix, next_word, reward_batch[i])
+                    break
             else:
                 break
 

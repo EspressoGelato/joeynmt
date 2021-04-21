@@ -1,12 +1,6 @@
 import random
 from collections import namedtuple
-import numpy as np
-import math
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-import torchvision.transforms as T
+
 from torch.nn.utils.rnn import pad_sequence
 
 from joeynmt.training import *
@@ -18,8 +12,9 @@ from joeynmt.ql_search import transformer_greedy, push_sample_to_memory
 from joeynmt.batch import Batch
 from joeynmt.data import load_data
 
-from joeynmt.vocabulary import Vocabulary
 from joeynmt.metrics import bleu
+import sacrebleu
+
 from joeynmt.prediction import validate_on_data
 
 from joeynmt.helpers import log_data_info, load_config, log_cfg, \
@@ -127,7 +122,7 @@ def Q_learning(cfg_file: str) -> None:
     # eval options
     test_config = cfg["testing"]
     bpe_type = test_config.get("bpe_type", "subword-nmt")
-    sacrebleu = {"remove_whitespace": True, "tokenize": "13a"}
+    #sacrebleu = {"remove_whitespace": True, "tokenize": "13a"}
     max_output_length = train_config.get("max_output_length", None)
     minimize_metric = True
     # initialize training statistics
@@ -246,8 +241,10 @@ def Q_learning(cfg_file: str) -> None:
 
             reward_batch = []  # Get the reward_batch (Get the bleu score of the sentences in a batch)
 
+
+
             for i in range(int(batch.src.shape[0])):
-                all_outputs = [trans_output_batch[i]]
+                all_outputs = [(trans_output_batch[i])[1:]]
                 hypotheses = policy_net.trg_vocab.arrays_to_sentences(arrays=all_outputs,
                                                                       cut_at_eos=True)
 
@@ -262,12 +259,19 @@ def Q_learning(cfg_file: str) -> None:
                 # valid_sources = [join_char.join(s) for s in data.src]
                 valid_references = [join_char.join(t) for t in references]
                 valid_hypotheses = [join_char.join(t) for t in hypotheses]
-                current_valid_score = bleu(
+                print(valid_references, valid_hypotheses)
+                ''' current_valid_score = bleu(
                     valid_hypotheses, valid_references,
                     tokenize=sacrebleu["tokenize"])
+                '''
+
+                current_valid_score = sacrebleu.corpus_bleu(sys_stream=valid_hypotheses,
+                                      ref_streams=[valid_references],
+                                      smooth_method='floor',
+                                      smooth_value=0.01).score
 
                 reward_batch.append(current_valid_score)
-            #print('reward batch is', reward_batch)
+            print('reward batch is', reward_batch)
             reward_batch = torch.tensor(reward_batch, dtype=torch.float)
 
             # reward_batch = bleu(hypotheses, references, tokenize="13a")
@@ -405,11 +409,12 @@ def Q_learning(cfg_file: str) -> None:
                 # Compute loss
                 loss = loss_function(yj, Q_value)
                 #print('loss', loss)
-                #logger.info(loss)
+                logger.info("step = {}, loss = {}".format(stats.steps, loss.item()))
                 loss.backward()
                 #for param in policy_net.parameters():
                 #   param.grad.data.clamp_(-1, 1)
                 optimizer.step()
+
 
                 stats.steps += 1
                 #print('step', stats.steps)
@@ -418,89 +423,89 @@ def Q_learning(cfg_file: str) -> None:
                     #print('update the parameters in target_net.')
                     target_net.load_state_dict(policy_net.state_dict())
 
-                #if stats.steps % validation_freq == 0:  # Validation
-        print('Start validation')
+                if stats.steps % validation_freq == 0:  # Validation
+                    print('Start validation')
 
-        valid_score, valid_loss, valid_ppl, valid_sources, \
-        valid_sources_raw, valid_references, valid_hypotheses, \
-        valid_hypotheses_raw, valid_attention_scores = \
-            validate_on_data(
-                model=policy_net,
-                data=dev_data,
-                batch_size=eval_batch_size,
-                use_cuda=use_cuda,
-                level=level,
-                eval_metric=eval_metric,
-                n_gpu=n_gpu,
-                compute_loss=True,
-                beam_size=1,
-                beam_alpha=-1,
-                batch_type=eval_batch_type,
-                postprocess=True,
-                bpe_type=bpe_type,
-                sacrebleu=sacrebleu,
-                max_output_length=max_output_length
-            )
-        print('validation_loss: {}, validation_score: {}'.format(valid_loss, valid_score))
-        logger.info(valid_loss)
-        print('average loss: total_loss/n_tokens:', valid_ppl)
+                    valid_score, valid_loss, valid_ppl, valid_sources, \
+                    valid_sources_raw, valid_references, valid_hypotheses, \
+                    valid_hypotheses_raw, valid_attention_scores = \
+                        validate_on_data(
+                            model=policy_net,
+                            data=dev_data,
+                            batch_size=eval_batch_size,
+                            use_cuda=use_cuda,
+                            level=level,
+                            eval_metric=eval_metric,
+                            n_gpu=n_gpu,
+                            compute_loss=True,
+                            beam_size=1,
+                            beam_alpha=-1,
+                            batch_type=eval_batch_type,
+                            postprocess=True,
+                            bpe_type=bpe_type,
+                            sacrebleu=sacrebleu,
+                            max_output_length=max_output_length
+                        )
+                    print('validation_loss: {}, validation_score: {}'.format(valid_loss, valid_score))
+                    logger.info(valid_loss)
+                    print('average loss: total_loss/n_tokens:', valid_ppl)
 
-        if early_stopping_metric == "loss":
-            ckpt_score = valid_loss
-        elif early_stopping_metric in ["ppl", "perplexity"]:
-            ckpt_score = valid_ppl
-        else:
-            ckpt_score = valid_score
-        if stats.is_best(ckpt_score):
-            stats.best_ckpt_score = ckpt_score
-            stats.best_ckpt_iter = stats.steps
-            logger.info('Hooray! New best validation result [%s]!',
-                        early_stopping_metric)
-            if ckpt_queue.maxsize > 0:
-                logger.info("Saving new checkpoint.")
+                    if early_stopping_metric == "loss":
+                        ckpt_score = valid_loss
+                    elif early_stopping_metric in ["ppl", "perplexity"]:
+                        ckpt_score = valid_ppl
+                    else:
+                        ckpt_score = valid_score
+                    if stats.is_best(ckpt_score):
+                        stats.best_ckpt_score = ckpt_score
+                        stats.best_ckpt_iter = stats.steps
+                        logger.info('Hooray! New best validation result [%s]!',
+                                    early_stopping_metric)
+                        if ckpt_queue.maxsize > 0:
+                            logger.info("Saving new checkpoint.")
 
-                # def _save_checkpoint(self) -> None:
-                """
-                Save the model's current parameters and the training state to a
-                checkpoint.
-                The training state contains the total number of training steps,
-                the total number of training tokens,
-                the best checkpoint score and iteration so far,
-                and optimizer and scheduler states.
-                """
-                model_path = "{}/{}.ckpt".format(model_dir, stats.steps)
-                model_state_dict = policy_net.module.state_dict() \
-                    if isinstance(policy_net, torch.nn.DataParallel) \
-                    else policy_net.state_dict()
-                state = {
-                    "steps": stats.steps,
-                    "total_tokens": stats.total_tokens,
-                    "best_ckpt_score": stats.best_ckpt_score,
-                    "best_ckpt_iteration": stats.best_ckpt_iter,
-                    "model_state": model_state_dict,
-                    "optimizer_state": optimizer.state_dict(),
-                    # "scheduler_state": scheduler.state_dict() if
-                    # self.scheduler is not None else None,
-                    # 'amp_state': amp.state_dict() if self.fp16 else None
-                }
-                torch.save(state, model_path)
-                if ckpt_queue.full():
-                    to_delete = ckpt_queue.get()  # delete oldest ckpt
-                    try:
-                        os.remove(to_delete)
-                    except FileNotFoundError:
-                        logger.warning("Wanted to delete old checkpoint %s but "
-                                       "file does not exist.", to_delete)
+                            # def _save_checkpoint(self) -> None:
+                            """
+                            Save the model's current parameters and the training state to a
+                            checkpoint.
+                            The training state contains the total number of training steps,
+                            the total number of training tokens,
+                            the best checkpoint score and iteration so far,
+                            and optimizer and scheduler states.
+                            """
+                            model_path = "{}/{}.ckpt".format(model_dir, stats.steps)
+                            model_state_dict = policy_net.module.state_dict() \
+                                if isinstance(policy_net, torch.nn.DataParallel) \
+                                else policy_net.state_dict()
+                            state = {
+                                "steps": stats.steps,
+                                "total_tokens": stats.total_tokens,
+                                "best_ckpt_score": stats.best_ckpt_score,
+                                "best_ckpt_iteration": stats.best_ckpt_iter,
+                                "model_state": model_state_dict,
+                                "optimizer_state": optimizer.state_dict(),
+                                # "scheduler_state": scheduler.state_dict() if
+                                # self.scheduler is not None else None,
+                                # 'amp_state': amp.state_dict() if self.fp16 else None
+                            }
+                            torch.save(state, model_path)
+                            if ckpt_queue.full():
+                                to_delete = ckpt_queue.get()  # delete oldest ckpt
+                                try:
+                                    os.remove(to_delete)
+                                except FileNotFoundError:
+                                    logger.warning("Wanted to delete old checkpoint %s but "
+                                                   "file does not exist.", to_delete)
 
-                ckpt_queue.put(model_path)
+                            ckpt_queue.put(model_path)
 
-                best_path = "{}/best.ckpt".format(model_dir)
-                try:
-                    # create/modify symbolic link for best checkpoint
-                    symlink_update("{}.ckpt".format(stats.steps), best_path)
-                except OSError:
-                    # overwrite best.ckpt
-                    torch.save(state, best_path)
+                            best_path = "{}/best.ckpt".format(model_dir)
+                            try:
+                                # create/modify symbolic link for best checkpoint
+                                symlink_update("{}.ckpt".format(stats.steps), best_path)
+                            except OSError:
+                                # overwrite best.ckpt
+                                torch.save(state, best_path)
 
 
-Q_learning(cfg_file='../configs/transformer_iwslt14_deen_bpe.yaml')
+Q_learning(cfg_file='../configs/transformer_reverse_ql.yaml')
